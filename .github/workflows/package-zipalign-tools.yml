@@ -1,0 +1,52 @@
+name: Package Android zipalign runtime
+
+on:
+  push:
+    branches:
+      - fix/connect-timeout-20261013
+    paths:
+      - ".github/workflows/package-zipalign-tools.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tools:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          accept-android-sdk-licenses: false
+      - name: Install Android build tools and NDK runtime
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "build-tools;36.0.0" "ndk;27.2.12479018"
+      - name: Package zipalign and libc++ runtime
+        run: |
+          set -euo pipefail
+          mkdir -p zipalign-tools
+          cp "$ANDROID_HOME/build-tools/36.0.0/zipalign" zipalign-tools/zipalign
+          CXX_RUNTIME="$(find "$ANDROID_HOME" -type f -name 'libc++.so' | head -n 1)"
+          if [ -z "$CXX_RUNTIME" ]; then
+            echo "Could not find libc++.so under Android SDK" >&2
+            exit 1
+          fi
+          cp "$CXX_RUNTIME" zipalign-tools/libc++.so
+          chmod +x zipalign-tools/zipalign
+          LD_LIBRARY_PATH="$PWD/zipalign-tools" ./zipalign-tools/zipalign -h >/dev/null 2>&1 || true
+          ls -lh zipalign-tools/*
+      - name: Upload zipalign runtime artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scropy-zipalign-runtime
+          path: zipalign-tools/
+          if-no-files-found: error
+          retention-days: 2
