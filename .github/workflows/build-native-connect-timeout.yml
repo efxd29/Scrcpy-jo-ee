@@ -33,7 +33,7 @@ jobs:
       - name: Accept licenses and install pinned Android toolchain
         run: |
           yes | sdkmanager --licenses >/dev/null
-          sdkmanager "platforms;android-36" "ndk;27.2.12479018" "cmake;3.22.1"
+          sdkmanager "platforms;android-36" "ndk;27.2.12479018" "cmake;3.22.1" "build-tools;36.0.0"
       - name: Restore pinned BoringSSL submodule
         run: |
           rm -rf app/src/main/cpp/boringssl
@@ -43,10 +43,11 @@ jobs:
         run: |
           chmod +x ./gradlew
           ./gradlew :app:externalNativeBuildRelease --stacktrace
-      - name: Collect ABI libraries
+      - name: Strip native debug symbols and collect ABI libraries
         run: |
           set -euo pipefail
-          mkdir -p native-artifact/arm64-v8a native-artifact/armeabi-v7a
+          STRIP="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          mkdir -p native-artifact/arm64-v8a native-artifact/armeabi-v7a native-artifact/tools
           for abi in arm64-v8a armeabi-v7a; do
             mapfile -t libs < <(find app/build/intermediates/cxx -type f -path "*/obj/$abi/libadb_pairing.so" | sort)
             if [ "${#libs[@]}" -eq 0 ]; then
@@ -55,9 +56,12 @@ jobs:
               exit 1
             fi
             cp "${libs[-1]}" "native-artifact/$abi/libadb_pairing.so"
+            "$STRIP" --strip-unneeded "native-artifact/$abi/libadb_pairing.so"
           done
-          ls -lh native-artifact/*/libadb_pairing.so
-      - name: Upload native library artifact
+          cp "$ANDROID_HOME/build-tools/36.0.0/zipalign" native-artifact/tools/zipalign
+          chmod +x native-artifact/tools/zipalign
+          ls -lh native-artifact/*/libadb_pairing.so native-artifact/tools/zipalign
+      - name: Upload native libraries and alignment tool
         uses: actions/upload-artifact@v4
         with:
           name: scropy-native-connect-timeout-libs
