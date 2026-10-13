@@ -1,0 +1,58 @@
+name: Export APK packaging runtime
+
+on:
+  push:
+    branches:
+      - fix/connect-timeout-20261013
+    paths:
+      - ".github/workflows/export-apk-packaging-runtime.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export-tools:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          accept-android-sdk-licenses: false
+      - name: Install Android build tools and NDK runtime
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "build-tools;36.0.0" "ndk;27.2.12479018"
+      - name: Bundle zipalign host runtime
+        run: |
+          set -euo pipefail
+          OUT=apk-packaging-tools/tools
+          mkdir -p "$OUT/lib"
+          cp "$ANDROID_HOME/build-tools/36.0.0/zipalign" "$OUT/zipalign"
+          cp "$ANDROID_HOME/build-tools/36.0.0/apksigner" "$OUT/apksigner"
+          cp "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" "$OUT/lib/apksigner.jar"
+          cp "$ANDROID_HOME/build-tools/36.0.0/lib/d8.jar" "$OUT/lib/d8.jar"
+          NDK="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64"
+          LIBCPP="$NDK/lib64/libc++.so"
+          if [ ! -f "$LIBCPP" ]; then
+            echo "Expected host libc++.so not found; candidate files:" >&2
+            find "$NDK" -name 'libc++.so' -print >&2
+            exit 1
+          fi
+          cp "$LIBCPP" "$OUT/libc++.so"
+          chmod +x "$OUT/zipalign" "$OUT/apksigner"
+          ldd "$OUT/zipalign" || true
+          ls -lh "$OUT/zipalign" "$OUT/apksigner" "$OUT/libc++.so" "$OUT/lib/"*
+      - name: Upload APK packaging runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: scropy-apk-packaging-runtime
+          path: apk-packaging-tools/
+          if-no-files-found: error
+          retention-days: 2
