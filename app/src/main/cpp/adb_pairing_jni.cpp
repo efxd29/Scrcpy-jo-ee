@@ -25,8 +25,6 @@
 #include <string.h>
 #include <netdb.h>
 #include <errno.h>
-#include <fcntl.h>
-#include <poll.h>
 
 #include <algorithm>
 #include <atomic>
@@ -85,6 +83,7 @@ static_assert(sizeof(PeerInfo) == kMaxPeerInfoSize, "PeerInfo size mismatch");
 static constexpr uint32_t A_CNXN = 0x4E584E43;
 static constexpr uint32_t A_AUTH = 0x48545541;
 static constexpr uint32_t A_STLS = 0x534c5453;
+static constexpr uint32_t A_STLS_VERSION = 0x01000000;
 static constexpr uint32_t ADB_VERSION  = 0x01000000;
 static constexpr uint32_t ADB_MAX_DATA = 1 << 20;
 
@@ -179,46 +178,6 @@ static bool write_adb_msg(int fd, uint32_t cmd, uint32_t arg0, uint32_t arg1,
     return true;
 }
 
-
-// Bound TCP connect time: SO_RCVTIMEO/SO_SNDTIMEO do not bound connect() on
-// a blocking socket, so a filtered/dropped route can leave the JNI caller stuck
-// until the kernel's long TCP retransmission timeout expires.
-static int connect_with_timeout(int fd, const struct sockaddr* addr,
-                                socklen_t addrlen, int timeout_ms) {
-    const int old_flags = fcntl(fd, F_GETFL, 0);
-    if (old_flags < 0) return -1;
-    if (fcntl(fd, F_SETFL, old_flags | O_NONBLOCK) < 0) return -1;
-
-    int rc = connect(fd, addr, addrlen);
-    if (rc < 0 && errno == EINPROGRESS) {
-        struct pollfd pfd = {fd, POLLOUT, 0};
-        do {
-            rc = poll(&pfd, 1, timeout_ms);
-        } while (rc < 0 && errno == EINTR);
-
-        if (rc == 0) {
-            errno = ETIMEDOUT;
-            rc = -1;
-        } else if (rc > 0) {
-            int socket_error = 0;
-            socklen_t error_len = sizeof(socket_error);
-            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &error_len) < 0) {
-                rc = -1;
-            } else if (socket_error != 0) {
-                errno = socket_error;
-                rc = -1;
-            } else {
-                rc = 0;
-            }
-        }
-    }
-
-    const int saved_errno = errno;
-    const int restore_rc = fcntl(fd, F_SETFL, old_flags);
-    if (rc == 0 && restore_rc < 0) return -1;
-    errno = saved_errno;
-    return rc;
-}
 
 // ── Generate self-signed X509 cert from existing EVP_PKEY ───────────────────
 
@@ -741,7 +700,7 @@ static std::string do_tls_connect(const char* host, int port,
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
-    if (connect_with_timeout(fd, res->ai_addr, res->ai_addrlen, 10000) < 0) {
+    if (connect(fd, res->ai_addr, res->ai_addrlen) < 0) {
         std::string err = std::string("TCP connect failed: ") + strerror(errno);
         freeaddrinfo(res); close(fd); EVP_PKEY_free(pkey); X509_free(cert);
         return err;
@@ -776,7 +735,7 @@ static std::string do_tls_connect(const char* host, int port,
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-        if (connect_with_timeout(fd, res->ai_addr, res->ai_addrlen, 10000) < 0) {
+        if (connect(fd, res->ai_addr, res->ai_addrlen) < 0) {
             freeaddrinfo(res); close(fd); EVP_PKEY_free(pkey); X509_free(cert);
             return "TCP reconnect failed for TLS-first";
         }
@@ -818,7 +777,7 @@ static std::string do_tls_connect(const char* host, int port,
     if (msg.cmd == A_STLS) {
         LOGI("Received STLS — upgrading to TLS");
         // Send STLS response
-        if (!write_adb_msg(fd, A_STLS, ADB_VERSION_TLS, 0, nullptr, 0)) {
+        if (!write_adb_msg(fd, A_STLS, A_STLS_VERSION, 0, nullptr, 0)) {
             close(fd); EVP_PKEY_free(pkey); X509_free(cert);
             return "Failed to send STLS response";
         }
