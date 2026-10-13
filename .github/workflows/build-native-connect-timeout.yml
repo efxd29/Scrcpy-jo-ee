@@ -59,8 +59,10 @@ jobs:
             "$STRIP" --strip-unneeded "native-artifact/$abi/libadb_pairing.so"
           done
           cp "$ANDROID_HOME/build-tools/36.0.0/zipalign" native-artifact/tools/zipalign
-          chmod +x native-artifact/tools/zipalign
-          ls -lh native-artifact/*/libadb_pairing.so native-artifact/tools/zipalign
+          cp "$ANDROID_HOME/build-tools/36.0.0/apksigner" native-artifact/tools/apksigner
+          cp -r "$ANDROID_HOME/build-tools/36.0.0/lib" native-artifact/tools/lib
+          chmod +x native-artifact/tools/zipalign native-artifact/tools/apksigner
+          ls -lh native-artifact/*/libadb_pairing.so native-artifact/tools/zipalign native-artifact/tools/apksigner
       - name: Upload native libraries and alignment tool
         uses: actions/upload-artifact@v4
         with:
