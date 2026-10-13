@@ -39,7 +39,7 @@ jobs:
           cp "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" "$OUT/lib/apksigner.jar"
           cp "$ANDROID_HOME/build-tools/36.0.0/lib/d8.jar" "$OUT/lib/d8.jar"
           NDK="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64"
-          LIBCPP="$NDK/lib64/libc++.so"
+          LIBCPP="$NDK/lib/x86_64-unknown-linux-gnu/libc++.so"
           if [ ! -f "$LIBCPP" ]; then
             echo "Expected host libc++.so not found; candidate files:" >&2
             find "$NDK" -name 'libc++.so' -print >&2
