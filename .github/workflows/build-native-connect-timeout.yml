@@ -1,0 +1,67 @@
+name: Build patched native ADB library
+
+on:
+  push:
+    branches:
+      - fix/connect-timeout-20261013
+    paths:
+      - "app/src/main/cpp/adb_pairing_jni.cpp"
+      - ".github/workflows/build-native-connect-timeout.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Scropy source
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install pinned Android toolchain
+        run: |
+          sdkmanager "ndk;27.2.12479018" "cmake;3.22.1"
+
+      - name: Restore pinned BoringSSL submodule
+        run: |
+          rm -rf app/src/main/cpp/boringssl
+          git clone --filter=blob:none https://github.com/google/boringssl.git app/src/main/cpp/boringssl
+          git -C app/src/main/cpp/boringssl checkout a2f9a2474d0703e6ac3111a07129ead7c5aa8245
+
+      - name: Build only the native library
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:externalNativeBuildRelease --stacktrace
+
+      - name: Collect ABI libraries
+        run: |
+          set -euo pipefail
+          mkdir -p native-artifact/arm64-v8a native-artifact/armeabi-v7a
+          for abi in arm64-v8a armeabi-v7a; do
+            mapfile -t libs < <(find app/build/intermediates/cxx -type f -path "*/obj/$abi/libadb_pairing.so" | sort)
+            if [ "${#libs[@]}" -eq 0 ]; then
+              echo "Missing libadb_pairing.so for $abi" >&2
+              find app/build/intermediates/cxx -type f -name 'libadb_pairing.so' -print >&2
+              exit 1
+            fi
+            cp "${libs[-1]}" "native-artifact/$abi/libadb_pairing.so"
+          done
+          ls -lh native-artifact/*/libadb_pairing.so
+
+      - name: Upload native library artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scropy-native-connect-timeout-libs
+          path: native-artifact/
+          if-no-files-found: error
+          retention-days: 2
