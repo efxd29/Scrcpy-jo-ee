@@ -18,31 +18,31 @@ jobs:
     steps:
       - name: Checkout Scropy source
         uses: actions/checkout@v4
-
+        with:
+          submodules: false
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-
-      - name: Install pinned Android toolchain
+        with:
+          packages: platform-tools
+          accept-android-sdk-licenses: false
+      - name: Accept licenses and install pinned Android toolchain
         run: |
-          sdkmanager "ndk;27.2.12479018" "cmake;3.22.1"
-
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platforms;android-36" "ndk;27.2.12479018" "cmake;3.22.1"
       - name: Restore pinned BoringSSL submodule
         run: |
           rm -rf app/src/main/cpp/boringssl
           git clone --filter=blob:none https://github.com/google/boringssl.git app/src/main/cpp/boringssl
           git -C app/src/main/cpp/boringssl checkout a2f9a2474d0703e6ac3111a07129ead7c5aa8245
-
       - name: Build only the native library
         run: |
           chmod +x ./gradlew
           ./gradlew :app:externalNativeBuildRelease --stacktrace
-
       - name: Collect ABI libraries
         run: |
           set -euo pipefail
@@ -57,7 +57,6 @@ jobs:
             cp "${libs[-1]}" "native-artifact/$abi/libadb_pairing.so"
           done
           ls -lh native-artifact/*/libadb_pairing.so
-
       - name: Upload native library artifact
         uses: actions/upload-artifact@v4
         with:
