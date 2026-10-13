@@ -41,10 +41,10 @@ class AdbConnection private constructor(
             val handle = AdbTlsSocket.connect(host, port, priv.encoded)
             val tlsTransport = TlsAdbTransport(handle)
             AdbConnection(tlsTransport, priv, pub).also {
-                if (!tlsTransport.isStlsPath) {
-                    // TLS-first: need to send CNXN over TLS
-                    it.sendCnxn()
-                }
+                // CNXN before STLS only asks adbd to upgrade the socket. Once TLS is
+                // established, adbd sends its actual CNXN only after receiving a new
+                // CNXN over the encrypted transport, so both TLS paths must send it.
+                it.sendCnxn()
                 // Start reader AFTER CNXN so the device has data to respond with
                 it.startReader()
                 it.waitConnected()
