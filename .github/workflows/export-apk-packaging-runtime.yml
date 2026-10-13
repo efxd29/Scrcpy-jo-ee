@@ -1,4 +1,4 @@
-name: Export APK packaging runtime
+name: Export APK signing tool
 
 on:
   push:
@@ -25,34 +25,22 @@ jobs:
         with:
           packages: platform-tools
           accept-android-sdk-licenses: false
-      - name: Install Android build tools and NDK runtime
+      - name: Install Android build tools
         run: |
           yes | sdkmanager --licenses >/dev/null
-          sdkmanager "build-tools;36.0.0" "ndk;27.2.12479018"
-      - name: Bundle zipalign host runtime
+          sdkmanager "build-tools;36.0.0"
+      - name: Collect APK signing tools
         run: |
           set -euo pipefail
-          OUT=apk-packaging-tools/tools
-          mkdir -p "$OUT/lib"
-          cp "$ANDROID_HOME/build-tools/36.0.0/zipalign" "$OUT/zipalign"
-          cp "$ANDROID_HOME/build-tools/36.0.0/apksigner" "$OUT/apksigner"
-          cp "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" "$OUT/lib/apksigner.jar"
-          cp "$ANDROID_HOME/build-tools/36.0.0/lib/d8.jar" "$OUT/lib/d8.jar"
-          NDK="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64"
-          LIBCPP="$NDK/lib/x86_64-unknown-linux-gnu/libc++.so"
-          if [ ! -f "$LIBCPP" ]; then
-            echo "Expected host libc++.so not found; candidate files:" >&2
-            find "$NDK" -name 'libc++.so' -print >&2
-            exit 1
-          fi
-          cp "$LIBCPP" "$OUT/libc++.so"
-          chmod +x "$OUT/zipalign" "$OUT/apksigner"
-          ldd "$OUT/zipalign" || true
-          ls -lh "$OUT/zipalign" "$OUT/apksigner" "$OUT/libc++.so" "$OUT/lib/"*
-      - name: Upload APK packaging runtime
+          OUT=apk-signing-tools
+          mkdir -p "$OUT"
+          cp "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" "$OUT/apksigner.jar"
+          sha256sum "$OUT/apksigner.jar"
+          ls -lh "$OUT/apksigner.jar"
+      - name: Upload APK signing tools
         uses: actions/upload-artifact@v4
         with:
-          name: scropy-apk-packaging-runtime
-          path: apk-packaging-tools/
+          name: scropy-apk-signing-tools
+          path: apk-signing-tools/
           if-no-files-found: error
           retention-days: 2
