@@ -3,6 +3,7 @@ package tech.devline.scropy_ui.adb
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import android.content.Context
 import java.io.IOException
 import java.security.PrivateKey
 import tech.devline.scropy_ui.LanOnlyNetwork
@@ -32,8 +33,12 @@ object AdbPairing {
      * Native JNI: returns null on success, or an error string on failure.
      */
     private external fun nativePair(
-        host: String, port: Int, pairingCode: String,
-        rsaPrivKeyDer: ByteArray, adbPubKey: ByteArray
+        host: String,
+        port: Int,
+        wifiNetworkHandle: Long,
+        pairingCode: String,
+        rsaPrivKeyDer: ByteArray,
+        adbPubKey: ByteArray,
     ): String?
 
     /**
@@ -41,6 +46,7 @@ object AdbPairing {
      * "Pair device with pairing code" screen, connecting to [host]:[pairPort].
      */
     suspend fun pair(
+        context: Context,
         host: String,
         pairPort: Int,
         pairingCode: String,
@@ -48,10 +54,13 @@ object AdbPairing {
         publicKeyAdb: ByteArray,
     ) = withContext(Dispatchers.IO) {
         if (pairPort !in 1..65535) throw IOException("Invalid ADB pairing port")
+        val wifiNetworkHandle = LanOnlyNetwork.requireWifiNetworkHandle(context, host)
         val localHost = LanOnlyNetwork.requireAllowedIpv4(host).hostAddress
             ?: throw IOException("Invalid LAN IPv4 address")
         Log.i(TAG, "Pairing with $localHost:$pairPort …")
-        val error = nativePair(localHost, pairPort, pairingCode, privateKey.encoded, publicKeyAdb)
+        val error = nativePair(
+            localHost, pairPort, wifiNetworkHandle, pairingCode, privateKey.encoded, publicKeyAdb
+        )
         if (error != null) {
             Log.e(TAG, "Pairing failed: $error")
             throw IOException(error)
