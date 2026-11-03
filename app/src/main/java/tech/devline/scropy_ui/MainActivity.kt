@@ -45,7 +45,6 @@ import tech.devline.scropy_ui.adb.AdbConnection
 import tech.devline.scropy_ui.adb.AdbPairing
 import tech.devline.scropy_ui.ui.theme.ScropyTheme
 import java.net.InetSocketAddress
-import java.net.NetworkInterface
 import java.net.Socket
 import java.util.Collections
 import java.util.UUID
@@ -140,23 +139,25 @@ private fun updateDeviceById(prefs: android.content.SharedPreferences, updated: 
 
 data class ScanResult(val host: String, val port: Int?, val label: String?)
 
-private fun getLocalSubnetPrefix(): String? = getLocalIpInfo()?.substringBeforeLast('.')?.plus('.')
+private fun getLocalSubnetPrefix(context: Context): String? =
+    getLocalIpInfo(context)?.substringBeforeLast('.')?.plus('.')
 
-private fun getLocalIpInfo(): String? = try {
-    NetworkInterface.getNetworkInterfaces()
-        ?.toList()
-        ?.filter { it.isUp && !it.isLoopback && !it.isVirtual }
-        ?.flatMap { it.interfaceAddresses.toList() }
-        ?.firstOrNull { addr ->
-            addr.address is java.net.Inet4Address &&
-                LanOnlyNetwork.isAllowedIpv4(addr.address.hostAddress ?: "")
-        }
-        ?.address?.hostAddress
-} catch (_: Exception) { null }
+private fun getLocalIpInfo(context: Context): String? = runCatching {
+    val network = LanOnlyNetwork.requireWifiNetwork(context)
+    val manager = context.getSystemService(android.net.ConnectivityManager::class.java)
+        ?: return@runCatching null
+    manager.getLinkProperties(network)?.linkAddresses
+        ?.mapNotNull { it.address as? java.net.Inet4Address }
+        ?.firstOrNull { LanOnlyNetwork.isAllowedIpv4(it.hostAddress ?: "") }
+        ?.hostAddress
+}.getOrNull()
 
-suspend fun scanForDevices(): List<ScanResult> = withContext(Dispatchers.IO) {
-    val prefix = getLocalSubnetPrefix() ?: return@withContext emptyList()
-    val myIp = getLocalIpInfo()
+suspend fun scanForDevices(context: Context): List<ScanResult> = withContext(Dispatchers.IO) {
+    val wifiNetwork = runCatching { LanOnlyNetwork.requireWifiNetwork(context) }
+        .getOrElse { return@withContext emptyList() }
+    val socketFactory = wifiNetwork.socketFactory
+    val prefix = getLocalSubnetPrefix(context) ?: return@withContext emptyList()
+    val myIp = getLocalIpInfo(context)
     val found = Collections.synchronizedList(mutableListOf<ScanResult>())
     coroutineScope {
         (1..254).forEach { i ->
@@ -165,15 +166,12 @@ suspend fun scanForDevices(): List<ScanResult> = withContext(Dispatchers.IO) {
                 if (ip == myIp) return@launch
                 val address = LanOnlyNetwork.parseIpv4(ip) ?: return@launch
                 val adbOpen = runCatching {
-                    Socket().use { s -> s.connect(InetSocketAddress(address, 5555), 400) }
+                    socketFactory.createSocket().use { socket ->
+                        socket.connect(InetSocketAddress(address, 5555), 400)
+                    }
                     true
                 }.getOrElse { false }
-                if (adbOpen) {
-                    found.add(ScanResult(ip, 5555, null))
-                } else {
-                    val reachable = runCatching { address.isReachable(400) }.getOrElse { false }
-                    if (reachable) found.add(ScanResult(ip, null, null))
-                }
+                if (adbOpen) found.add(ScanResult(ip, 5555, null))
             }
         }
     }
@@ -184,8 +182,11 @@ suspend fun scanForDevices(): List<ScanResult> = withContext(Dispatchers.IO) {
 }
 
 // Scan all 5-digit ports on a specific host for open ADB connections
-suspend fun scanAdbPorts(ip: String): List<Int> = withContext(Dispatchers.IO) {
+suspend fun scanAdbPorts(context: Context, ip: String): List<Int> = withContext(Dispatchers.IO) {
     val address = LanOnlyNetwork.parseIpv4(ip) ?: return@withContext emptyList()
+    val wifiHandle = runCatching { LanOnlyNetwork.requireWifiNetworkHandle(context, ip) }
+        .getOrElse { return@withContext emptyList() }
+    val socketFactory = if (wifiHandle == 0L) null else LanOnlyNetwork.requireWifiNetwork(context).socketFactory
     val open = Collections.synchronizedList(mutableListOf<Int>())
     val sem = Semaphore(300)
     coroutineScope {
@@ -193,7 +194,8 @@ suspend fun scanAdbPorts(ip: String): List<Int> = withContext(Dispatchers.IO) {
             launch {
                 sem.withPermit {
                     val ok = runCatching {
-                        Socket().use { s -> s.connect(InetSocketAddress(address, port), 300) }
+                        val socket = socketFactory?.createSocket() ?: Socket()
+                        socket.use { s -> s.connect(InetSocketAddress(address, port), 300) }
                         true
                     }.getOrElse { false }
                     if (ok) open.add(port)
@@ -216,7 +218,7 @@ fun discoverAdbViaBonjour(
     val handler = android.os.Handler(android.os.Looper.getMainLooper())
     val pending = LinkedBlockingQueue<android.net.nsd.NsdServiceInfo>()
     val resolving = AtomicBoolean(false)
-    val myIp = getLocalIpInfo()
+    val myIp = getLocalIpInfo(context)
 
     fun resolveNext() {
         val svc = pending.poll() ?: run { resolving.set(false); return }
@@ -264,7 +266,7 @@ suspend fun resolveAdbPortViaMdns(
     fallbackPort: Int,
     timeoutMs: Long = 3000,
 ): Int {
-    if (!LanOnlyNetwork.isAllowedIpv4(host)) return fallbackPort
+    if (runCatching { LanOnlyNetwork.requireWifiNetworkHandle(context, host) }.isFailure) return fallbackPort
     val nsd = context.getSystemService(android.content.Context.NSD_SERVICE) as android.net.nsd.NsdManager
     val result = CompletableDeferred<Int>()
     val listener = discoverAdbViaBonjour(context) { d ->
@@ -971,7 +973,7 @@ fun WifiConnectScreen(
                     }
                     // Subnet scan runs in parallel
                     scope.launch {
-                        scanResults = scanForDevices()
+                        scanResults = scanForDevices(ctx)
                         scanning = false
                     }
                 },
@@ -1042,7 +1044,7 @@ fun WifiConnectScreen(
                         portScanDone = false
                         val targetHost = portScanHost!!
                         scope.launch {
-                            portScanResults = scanAdbPorts(targetHost)
+                            portScanResults = scanAdbPorts(ctx, targetHost)
                             portScanning = false
                             portScanDone = true
                         }
@@ -1146,7 +1148,7 @@ fun WifiConnectScreen(
                         pairing = true; status = "Pairing..."
                         scope.launch {
                             val (priv, pub) = AdbAuthHelper.getOrCreateKeys(ctx as ComponentActivity)
-                            runCatching { AdbPairing.pair(host.trim(), pairPort, pairCode, priv, pub) }.fold(
+                            runCatching { AdbPairing.pair(ctx, host.trim(), pairPort, pairCode, priv, pub) }.fold(
                                 onSuccess = {
                                     // The connect port is NOT the pairing port, and it drifts —
                                     // find the live one rather than trusting whatever is typed.
