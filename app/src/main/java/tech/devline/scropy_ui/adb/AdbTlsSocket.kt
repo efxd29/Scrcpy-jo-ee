@@ -1,6 +1,7 @@
 package tech.devline.scropy_ui.adb
 
 import java.io.IOException
+import tech.devline.scropy_ui.LanOnlyNetwork
 
 /**
  * JNI wrapper for ADB TLS connections.
@@ -49,8 +50,12 @@ object AdbTlsSocket {
     private external fun nativeIsStlsPath(handle: Long): Boolean
 
     @Throws(IOException::class)
-    fun connect(host: String, port: Int, rsaPrivKeyDer: ByteArray): Long =
-        nativeConnect(host, port, rsaPrivKeyDer)
+    fun connect(host: String, port: Int, rsaPrivKeyDer: ByteArray): Long {
+        if (port !in 1..65535) throw IOException("Invalid ADB port")
+        val localHost = LanOnlyNetwork.requireAllowedIpv4(host).hostAddress
+            ?: throw IOException("Invalid LAN IPv4 address")
+        return nativeConnect(localHost, port, rsaPrivKeyDer)
+    }
 
     fun read(handle: Long, len: Int): ByteArray? = nativeRead(handle, len)
     fun write(handle: Long, data: ByteArray): Boolean = nativeWrite(handle, data)
