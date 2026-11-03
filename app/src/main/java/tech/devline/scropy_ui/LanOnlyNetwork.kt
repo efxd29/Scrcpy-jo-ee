@@ -88,11 +88,18 @@ internal object LanOnlyNetwork {
     fun isOnWifiSubnet(linkAddresses: List<android.net.LinkAddress>, target: InetAddress): Boolean =
         linkAddresses.any { linkAddress ->
             val localAddress = linkAddress.address as? Inet4Address ?: return@any false
-            isSameSubnet(localAddress, linkAddress.prefixLength, target)
+            isOnWifiSubnet(
+                localAddress.hostAddress ?: "",
+                linkAddress.prefixLength,
+                target.hostAddress ?: "",
+            )
         }
 
-    private fun isSameSubnet(local: Inet4Address, prefixLength: Int, target: InetAddress): Boolean {
-        if (prefixLength !in 1..32 || target !is Inet4Address) return false
+    /** Pure IPv4 subnet check, kept independent of Android framework objects for unit tests. */
+    fun isOnWifiSubnet(localIp: String, prefixLength: Int, targetIp: String): Boolean {
+        if (prefixLength !in 1..32) return false
+        val local = parseIpv4(localIp) ?: return false
+        val target = parseIpv4(targetIp) ?: return false
         val localValue = local.address.toUnsignedIpv4()
         val targetValue = target.address.toUnsignedIpv4()
         val mask = (0xFFFFFFFFL shl (32 - prefixLength)) and 0xFFFFFFFFL
