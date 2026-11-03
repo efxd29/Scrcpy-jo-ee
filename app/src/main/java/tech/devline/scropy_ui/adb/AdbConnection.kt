@@ -4,6 +4,7 @@ import android.content.Context
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.util.Log
+import tech.devline.scropy_ui.LanOnlyNetwork
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.IOException
@@ -37,8 +38,11 @@ class AdbConnection private constructor(
             host: String,
             port: Int = 5555,
         ): AdbConnection = withContext(Dispatchers.IO) {
+            if (port !in 1..65535) throw IOException("Invalid ADB port")
+            val localHost = LanOnlyNetwork.requireAllowedIpv4(host).hostAddress
+                ?: throw IOException("Invalid LAN IPv4 address")
             val (priv, pub) = AdbAuthHelper.getOrCreateKeys(context)
-            val handle = AdbTlsSocket.connect(host, port, priv.encoded)
+            val handle = AdbTlsSocket.connect(localHost, port, priv.encoded)
             val tlsTransport = TlsAdbTransport(handle)
             AdbConnection(tlsTransport, priv, pub).also {
                 if (!tlsTransport.isStlsPath) {
