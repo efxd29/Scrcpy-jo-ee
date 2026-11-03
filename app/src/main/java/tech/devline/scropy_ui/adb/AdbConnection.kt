@@ -39,10 +39,11 @@ class AdbConnection private constructor(
             port: Int = 5555,
         ): AdbConnection = withContext(Dispatchers.IO) {
             if (port !in 1..65535) throw IOException("Invalid ADB port")
+            val wifiNetworkHandle = LanOnlyNetwork.requireWifiNetworkHandle(context, host)
             val localHost = LanOnlyNetwork.requireAllowedIpv4(host).hostAddress
                 ?: throw IOException("Invalid LAN IPv4 address")
             val (priv, pub) = AdbAuthHelper.getOrCreateKeys(context)
-            val handle = AdbTlsSocket.connect(localHost, port, priv.encoded)
+            val handle = AdbTlsSocket.connect(localHost, port, priv.encoded, wifiNetworkHandle)
             val tlsTransport = TlsAdbTransport(handle)
             AdbConnection(tlsTransport, priv, pub).also {
                 if (!tlsTransport.isStlsPath) {
