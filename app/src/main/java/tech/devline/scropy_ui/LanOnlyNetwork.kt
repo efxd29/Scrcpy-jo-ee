@@ -77,10 +77,7 @@ internal object LanOnlyNetwork {
             ?: throw IOException("Wi-Fi LAN is required")
         val network = requireWifiNetwork(context)
         val linkAddresses = manager.getLinkProperties(network)?.linkAddresses.orEmpty()
-        val isOnWifiSubnet = linkAddresses.any { linkAddress ->
-            val localAddress = linkAddress.address as? Inet4Address ?: return@any false
-            isSameSubnet(localAddress, linkAddress.prefixLength, address)
-        }
+        val isOnWifiSubnet = isOnWifiSubnet(linkAddresses, address)
 
         if (!isOnWifiSubnet) {
             throw IOException("LAN-only mode: target must be on the connected Wi-Fi subnet")
@@ -88,8 +85,14 @@ internal object LanOnlyNetwork {
         return network.networkHandle
     }
 
+    fun isOnWifiSubnet(linkAddresses: List<android.net.LinkAddress>, target: InetAddress): Boolean =
+        linkAddresses.any { linkAddress ->
+            val localAddress = linkAddress.address as? Inet4Address ?: return@any false
+            isSameSubnet(localAddress, linkAddress.prefixLength, target)
+        }
+
     private fun isSameSubnet(local: Inet4Address, prefixLength: Int, target: InetAddress): Boolean {
-        if (prefixLength !in 1..32) return false
+        if (prefixLength !in 1..32 || target !is Inet4Address) return false
         val localValue = local.address.toUnsignedIpv4()
         val targetValue = target.address.toUnsignedIpv4()
         val mask = (0xFFFFFFFFL shl (32 - prefixLength)) and 0xFFFFFFFFL
