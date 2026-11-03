@@ -39,12 +39,9 @@ class LanOnlyNetworkTest {
     }
     @Test
     fun restrictsTargetsToTheActualWifiSubnet() {
-        val linkAddresses = listOf(
-            android.net.LinkAddress(java.net.InetAddress.getByName("192.168.1.10"), 25)
-        )
-        assertTrue(LanOnlyNetwork.isOnWifiSubnet(linkAddresses, java.net.InetAddress.getByName("192.168.1.120")))
-        assertFalse(LanOnlyNetwork.isOnWifiSubnet(linkAddresses, java.net.InetAddress.getByName("192.168.1.200")))
-        assertFalse(LanOnlyNetwork.isOnWifiSubnet(linkAddresses, java.net.InetAddress.getByName("192.168.2.10")))
+        assertTrue(LanOnlyNetwork.isOnWifiSubnet("192.168.1.10", 25, "192.168.1.120"))
+        assertFalse(LanOnlyNetwork.isOnWifiSubnet("192.168.1.10", 25, "192.168.1.200"))
+        assertFalse(LanOnlyNetwork.isOnWifiSubnet("192.168.1.10", 25, "192.168.2.10"))
     }
 
 }
