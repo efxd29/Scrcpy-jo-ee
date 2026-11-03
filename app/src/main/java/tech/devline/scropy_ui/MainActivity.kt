@@ -156,6 +156,9 @@ suspend fun scanForDevices(context: Context): List<ScanResult> = withContext(Dis
     val wifiNetwork = runCatching { LanOnlyNetwork.requireWifiNetwork(context) }
         .getOrElse { return@withContext emptyList() }
     val socketFactory = wifiNetwork.socketFactory
+    val manager = context.getSystemService(android.net.ConnectivityManager::class.java)
+        ?: return@withContext emptyList()
+    val linkAddresses = manager.getLinkProperties(wifiNetwork)?.linkAddresses.orEmpty()
     val prefix = getLocalSubnetPrefix(context) ?: return@withContext emptyList()
     val myIp = getLocalIpInfo(context)
     val found = Collections.synchronizedList(mutableListOf<ScanResult>())
@@ -165,6 +168,7 @@ suspend fun scanForDevices(context: Context): List<ScanResult> = withContext(Dis
                 val ip = "$prefix$i"
                 if (ip == myIp) return@launch
                 val address = LanOnlyNetwork.parseIpv4(ip) ?: return@launch
+                if (!LanOnlyNetwork.isOnWifiSubnet(linkAddresses, address)) return@launch
                 val adbOpen = runCatching {
                     socketFactory.createSocket().use { socket ->
                         socket.connect(InetSocketAddress(address, 5555), 400)
