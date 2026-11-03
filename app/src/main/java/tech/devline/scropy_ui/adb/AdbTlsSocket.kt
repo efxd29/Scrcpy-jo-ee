@@ -32,7 +32,12 @@ object AdbTlsSocket {
      * @throws IOException on any failure (DNS, TCP, STLS, TLS handshake)
      */
     @Throws(IOException::class)
-    private external fun nativeConnect(host: String, port: Int, rsaPrivKeyDer: ByteArray): Long
+    private external fun nativeConnect(
+        host: String,
+        port: Int,
+        rsaPrivKeyDer: ByteArray,
+        wifiNetworkHandle: Long,
+    ): Long
 
     /** Read exactly [len] bytes over TLS. Returns null on error/EOF. */
     private external fun nativeRead(handle: Long, len: Int): ByteArray?
@@ -50,11 +55,16 @@ object AdbTlsSocket {
     private external fun nativeIsStlsPath(handle: Long): Boolean
 
     @Throws(IOException::class)
-    fun connect(host: String, port: Int, rsaPrivKeyDer: ByteArray): Long {
+    fun connect(
+        host: String,
+        port: Int,
+        rsaPrivKeyDer: ByteArray,
+        wifiNetworkHandle: Long,
+    ): Long {
         if (port !in 1..65535) throw IOException("Invalid ADB port")
         val localHost = LanOnlyNetwork.requireAllowedIpv4(host).hostAddress
             ?: throw IOException("Invalid LAN IPv4 address")
-        return nativeConnect(localHost, port, rsaPrivKeyDer)
+        return nativeConnect(localHost, port, rsaPrivKeyDer, wifiNetworkHandle)
     }
 
     fun read(handle: Long, len: Int): ByteArray? = nativeRead(handle, len)
