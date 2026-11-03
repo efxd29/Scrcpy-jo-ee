@@ -23,7 +23,6 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <string.h>
-#include <netdb.h>
 #include <errno.h>
 
 #include <algorithm>
@@ -85,6 +84,34 @@ static constexpr uint32_t A_AUTH = 0x48545541;
 static constexpr uint32_t A_STLS = 0x534c5453;
 static constexpr uint32_t ADB_VERSION  = 0x01000000;
 static constexpr uint32_t ADB_MAX_DATA = 1 << 20;
+
+/*
+ * LAN-only network policy.
+ * Accept only literal RFC1918, IPv4 link-local, or loopback addresses.
+ * inet_pton is numeric-only: hostnames are rejected without issuing DNS.
+ */
+static bool make_lan_sockaddr(const char* host, int port, sockaddr_in* out) {
+    if (!host || !out || port < 1 || port > 65535) return false;
+
+    struct in_addr address = {};
+    if (inet_pton(AF_INET, host, &address) != 1) return false;
+
+    const uint32_t ip = ntohl(address.s_addr);
+    const uint8_t a = static_cast<uint8_t>((ip >> 24) & 0xFF);
+    const uint8_t b = static_cast<uint8_t>((ip >> 16) & 0xFF);
+    const bool rfc1918 =
+        a == 10 ||
+        (a == 172 && b >= 16 && b <= 31) ||
+        (a == 192 && b == 168);
+    const bool localOnly = (a == 169 && b == 254) || a == 127;
+    if (!rfc1918 && !localOnly) return false;
+
+    memset(out, 0, sizeof(*out));
+    out->sin_family = AF_INET;
+    out->sin_port = htons(static_cast<uint16_t>(port));
+    out->sin_addr = address;
+    return true;
+}
 
 
 // ── TLS connection handle management ────────────────────────────────────────
@@ -334,6 +361,12 @@ static std::string do_pair(const char* host, int port,
                            const char* pairing_code, size_t code_len,
                            const uint8_t* rsa_priv_key_der, size_t rsa_priv_key_der_len,
                            const uint8_t* adb_pub_key, size_t adb_pub_key_len) {
+    // Reject public destinations and hostnames before any network operation.
+    struct sockaddr_in remote = {};
+    if (!make_lan_sockaddr(host, port, &remote)) {
+        return "LAN-only mode: public IPs and hostnames are blocked";
+    }
+
     // 1. Parse RSA private key and generate self-signed cert
     EVP_PKEY* pkey = parse_rsa_key_der(rsa_priv_key_der, rsa_priv_key_der_len);
     if (!pkey) {
@@ -342,30 +375,18 @@ static std::string do_pair(const char* host, int port,
     X509* cert = generate_cert(pkey);
     LOGI("Generated self-signed TLS certificate");
 
-    // 2. TCP connect
-    struct addrinfo hints = {}, *res = nullptr;
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    char port_str[16];
-    snprintf(port_str, sizeof(port_str), "%d", port);
-
-    if (getaddrinfo(host, port_str, &hints, &res) != 0 || !res) {
-        X509_free(cert); EVP_PKEY_free(pkey);
-        return std::string("DNS resolution failed for ") + host;
-    }
-
-    int fd = socket(res->ai_family, SOCK_STREAM, 0);
+    // 2. TCP connect directly to the already-validated LAN IPv4 address.
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
-        freeaddrinfo(res); X509_free(cert); EVP_PKEY_free(pkey);
+        X509_free(cert); EVP_PKEY_free(pkey);
         return "socket() failed";
     }
 
-    if (connect(fd, res->ai_addr, res->ai_addrlen) < 0) {
+    if (connect(fd, reinterpret_cast<struct sockaddr*>(&remote), sizeof(remote)) < 0) {
         std::string err = std::string("connect() failed: ") + strerror(errno);
-        freeaddrinfo(res); close(fd); X509_free(cert); EVP_PKEY_free(pkey);
+        close(fd); X509_free(cert); EVP_PKEY_free(pkey);
         return err;
     }
-    freeaddrinfo(res);
     LOGI("TCP connected to %s:%d", host, port);
 
     // 3. TLS 1.3 mutual auth
@@ -663,6 +684,12 @@ static std::string do_tls_connect(const char* host, int port,
                                    const uint8_t* rsa_priv_key_der,
                                    size_t rsa_priv_key_der_len,
                                    jlong* out_handle) {
+    // Reject public destinations and hostnames before any network operation.
+    struct sockaddr_in remote = {};
+    if (!make_lan_sockaddr(host, port, &remote)) {
+        return "LAN-only mode: public IPs and hostnames are blocked";
+    }
+
     // 1. Parse RSA private key
     EVP_PKEY* pkey = parse_rsa_key_der(rsa_priv_key_der, rsa_priv_key_der_len);
     if (!pkey) return "Failed to parse RSA private key";
@@ -673,21 +700,10 @@ static std::string do_tls_connect(const char* host, int port,
     if (!cert) { EVP_PKEY_free(pkey); return "Failed to generate TLS certificate"; }
     LOGI("Generated self-signed cert for TLS connect");
 
-    // 3. TCP connect
-    struct addrinfo hints = {}, *res = nullptr;
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    char port_str[16];
-    snprintf(port_str, sizeof(port_str), "%d", port);
-
-    if (getaddrinfo(host, port_str, &hints, &res) != 0 || !res) {
-        EVP_PKEY_free(pkey); X509_free(cert);
-        return std::string("DNS resolution failed for ") + host;
-    }
-
-    int fd = socket(res->ai_family, SOCK_STREAM, 0);
+    // 3. TCP connect directly to the already-validated LAN IPv4 address.
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
-        freeaddrinfo(res); EVP_PKEY_free(pkey); X509_free(cert);
+        EVP_PKEY_free(pkey); X509_free(cert);
         return "socket() failed";
     }
 
@@ -699,12 +715,11 @@ static std::string do_tls_connect(const char* host, int port,
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
-    if (connect(fd, res->ai_addr, res->ai_addrlen) < 0) {
+    if (connect(fd, reinterpret_cast<struct sockaddr*>(&remote), sizeof(remote)) < 0) {
         std::string err = std::string("TCP connect failed: ") + strerror(errno);
-        freeaddrinfo(res); close(fd); EVP_PKEY_free(pkey); X509_free(cert);
+        close(fd); EVP_PKEY_free(pkey); X509_free(cert);
         return err;
     }
-    freeaddrinfo(res);
     LOGI("TCP connected to %s:%d", host, port);
 
     // 4. Try STLS upgrade path first (standard ADB wireless debugging protocol)
@@ -725,20 +740,19 @@ static std::string do_tls_connect(const char* host, int port,
         LOGI("Peer closed after CNXN — retrying with TLS-first...");
         close(fd);
 
-        // Reconnect for TLS-first attempt
-        if (getaddrinfo(host, port_str, &hints, &res) != 0 || !res) {
+        // Reconnect to the same validated LAN IPv4 address for TLS-first.
+        fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) {
             EVP_PKEY_free(pkey); X509_free(cert);
-            return "DNS resolution failed on retry";
+            return "socket() failed on TLS-first retry";
         }
-        fd = socket(res->ai_family, SOCK_STREAM, 0);
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-        if (connect(fd, res->ai_addr, res->ai_addrlen) < 0) {
-            freeaddrinfo(res); close(fd); EVP_PKEY_free(pkey); X509_free(cert);
+        if (connect(fd, reinterpret_cast<struct sockaddr*>(&remote), sizeof(remote)) < 0) {
+            close(fd); EVP_PKEY_free(pkey); X509_free(cert);
             return "TCP reconnect failed for TLS-first";
         }
-        freeaddrinfo(res);
         LOGI("Reconnected — trying TLS-first...");
 
         SSL* ssl; SSL_CTX* ssl_ctx;
