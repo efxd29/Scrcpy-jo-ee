@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.security.PrivateKey
+import tech.devline.scropy_ui.LanOnlyNetwork
 
 /**
  * ADB Wireless Debugging Pairing (Android 11+).
@@ -46,8 +47,11 @@ object AdbPairing {
         privateKey: PrivateKey,
         publicKeyAdb: ByteArray,
     ) = withContext(Dispatchers.IO) {
-        Log.i(TAG, "Pairing with $host:$pairPort …")
-        val error = nativePair(host, pairPort, pairingCode, privateKey.encoded, publicKeyAdb)
+        if (pairPort !in 1..65535) throw IOException("Invalid ADB pairing port")
+        val localHost = LanOnlyNetwork.requireAllowedIpv4(host).hostAddress
+            ?: throw IOException("Invalid LAN IPv4 address")
+        Log.i(TAG, "Pairing with $localHost:$pairPort …")
+        val error = nativePair(localHost, pairPort, pairingCode, privateKey.encoded, publicKeyAdb)
         if (error != null) {
             Log.e(TAG, "Pairing failed: $error")
             throw IOException(error)
