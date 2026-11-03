@@ -148,15 +148,11 @@ private fun getLocalIpInfo(): String? = try {
         ?.filter { it.isUp && !it.isLoopback && !it.isVirtual }
         ?.flatMap { it.interfaceAddresses.toList() }
         ?.firstOrNull { addr ->
-            addr.address is java.net.Inet4Address && !addr.address.isLoopbackAddress
+            addr.address is java.net.Inet4Address &&
+                LanOnlyNetwork.isAllowedIpv4(addr.address.hostAddress ?: "")
         }
         ?.address?.hostAddress
 } catch (_: Exception) { null }
-
-private fun resolveHostname(ip: String): String? = runCatching {
-    java.net.InetAddress.getByName(ip).hostName
-        .takeIf { h -> h != ip && !h.matches(Regex("""\d+\.\d+\.\d+\.\d+""")) }
-}.getOrNull()
 
 suspend fun scanForDevices(): List<ScanResult> = withContext(Dispatchers.IO) {
     val prefix = getLocalSubnetPrefix() ?: return@withContext emptyList()
@@ -167,21 +163,16 @@ suspend fun scanForDevices(): List<ScanResult> = withContext(Dispatchers.IO) {
             launch {
                 val ip = "$prefix$i"
                 if (ip == myIp) return@launch
+                val address = LanOnlyNetwork.parseIpv4(ip) ?: return@launch
                 val adbOpen = runCatching {
-                    Socket().use { s -> s.connect(InetSocketAddress(ip, 5555), 400) }
+                    Socket().use { s -> s.connect(InetSocketAddress(address, 5555), 400) }
                     true
                 }.getOrElse { false }
                 if (adbOpen) {
-                    val label = resolveHostname(ip)
-                    found.add(ScanResult(ip, 5555, label))
+                    found.add(ScanResult(ip, 5555, null))
                 } else {
-                    val reachable = runCatching {
-                        java.net.InetAddress.getByName(ip).isReachable(400)
-                    }.getOrElse { false }
-                    if (reachable) {
-                        val label = resolveHostname(ip)
-                        found.add(ScanResult(ip, null, label))
-                    }
+                    val reachable = runCatching { address.isReachable(400) }.getOrElse { false }
+                    if (reachable) found.add(ScanResult(ip, null, null))
                 }
             }
         }
@@ -194,6 +185,7 @@ suspend fun scanForDevices(): List<ScanResult> = withContext(Dispatchers.IO) {
 
 // Scan all 5-digit ports on a specific host for open ADB connections
 suspend fun scanAdbPorts(ip: String): List<Int> = withContext(Dispatchers.IO) {
+    val address = LanOnlyNetwork.parseIpv4(ip) ?: return@withContext emptyList()
     val open = Collections.synchronizedList(mutableListOf<Int>())
     val sem = Semaphore(300)
     coroutineScope {
@@ -201,7 +193,7 @@ suspend fun scanAdbPorts(ip: String): List<Int> = withContext(Dispatchers.IO) {
             launch {
                 sem.withPermit {
                     val ok = runCatching {
-                        Socket().use { s -> s.connect(InetSocketAddress(ip, port), 300) }
+                        Socket().use { s -> s.connect(InetSocketAddress(address, port), 300) }
                         true
                     }.getOrElse { false }
                     if (ok) open.add(port)
@@ -231,9 +223,12 @@ fun discoverAdbViaBonjour(
         nsd.resolveService(svc, object : android.net.nsd.NsdManager.ResolveListener {
             override fun onResolveFailed(si: android.net.nsd.NsdServiceInfo, e: Int) = resolveNext()
             override fun onServiceResolved(si: android.net.nsd.NsdServiceInfo) {
-                si.host?.hostAddress?.let { ip ->
-                    if (ip != myIp) handler.post { onFound(DiscoveredDevice(si.serviceName, ip, si.port)) }
-                }
+                si.host
+                    ?.takeIf { it is java.net.Inet4Address && LanOnlyNetwork.isAllowedIpv4(it.hostAddress ?: "") }
+                    ?.hostAddress
+                    ?.let { ip ->
+                        if (ip != myIp) handler.post { onFound(DiscoveredDevice(si.serviceName, ip, si.port)) }
+                    }
                 resolveNext()
             }
         })
@@ -269,6 +264,7 @@ suspend fun resolveAdbPortViaMdns(
     fallbackPort: Int,
     timeoutMs: Long = 3000,
 ): Int {
+    if (!LanOnlyNetwork.isAllowedIpv4(host)) return fallbackPort
     val nsd = context.getSystemService(android.content.Context.NSD_SERVICE) as android.net.nsd.NsdManager
     val result = CompletableDeferred<Int>()
     val listener = discoverAdbViaBonjour(context) { d ->
