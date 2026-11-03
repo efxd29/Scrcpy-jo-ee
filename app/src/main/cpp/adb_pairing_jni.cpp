@@ -17,6 +17,7 @@
 
 #include <jni.h>
 #include <android/log.h>
+#include <android/multinetwork.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -357,7 +358,7 @@ static bool read_pairing_header(SSL* ssl, uint8_t* type, uint32_t* payload_len) 
 
 // ── Main pairing function ───────────────────────────────────────────────────
 
-static std::string do_pair(const char* host, int port,
+static std::string do_pair(const char* host, int port, uint64_t wifi_network_handle,
                            const char* pairing_code, size_t code_len,
                            const uint8_t* rsa_priv_key_der, size_t rsa_priv_key_der_len,
                            const uint8_t* adb_pub_key, size_t adb_pub_key_len) {
@@ -365,6 +366,10 @@ static std::string do_pair(const char* host, int port,
     struct sockaddr_in remote = {};
     if (!make_lan_sockaddr(host, port, &remote)) {
         return "LAN-only mode: public IPs and hostnames are blocked";
+    }
+    const bool loopback = (ntohl(remote.sin_addr.s_addr) >> 24) == 127;
+    if (wifi_network_handle == 0 && !loopback) {
+        return "Wi-Fi network binding is required for LAN connections";
     }
 
     // 1. Parse RSA private key and generate self-signed cert
@@ -380,6 +385,11 @@ static std::string do_pair(const char* host, int port,
     if (fd < 0) {
         X509_free(cert); EVP_PKEY_free(pkey);
         return "socket() failed";
+    }
+    if (wifi_network_handle != 0 &&
+        android_setsocknetwork(static_cast<net_handle_t>(wifi_network_handle), fd) != 0) {
+        close(fd); X509_free(cert); EVP_PKEY_free(pkey);
+        return "Failed to bind ADB pairing socket to Wi-Fi";
     }
 
     if (connect(fd, reinterpret_cast<struct sockaddr*>(&remote), sizeof(remote)) < 0) {
@@ -587,7 +597,7 @@ static std::string do_pair(const char* host, int port,
 extern "C" JNIEXPORT jstring JNICALL
 Java_tech_devline_scropy_1ui_adb_AdbPairing_nativePair(
         JNIEnv* env, jobject /* thiz */,
-        jstring j_host, jint port,
+        jstring j_host, jint port, jlong j_wifi_network_handle,
         jstring j_code,
         jbyteArray j_rsa_priv_key_der,
         jbyteArray j_adb_pub_key) {
@@ -602,7 +612,8 @@ Java_tech_devline_scropy_1ui_adb_AdbPairing_nativePair(
     jsize key_len = env->GetArrayLength(j_adb_pub_key);
     jbyte* key_data = env->GetByteArrayElements(j_adb_pub_key, nullptr);
 
-    std::string result = do_pair(host, port, code, code_len,
+    std::string result = do_pair(host, port, static_cast<uint64_t>(j_wifi_network_handle),
+                                 code, code_len,
                                  reinterpret_cast<const uint8_t*>(priv_data),
                                  (size_t)priv_len,
                                  reinterpret_cast<const uint8_t*>(key_data),
@@ -683,11 +694,16 @@ static std::string do_tls_handshake(int fd, EVP_PKEY* pkey, X509* cert,
 static std::string do_tls_connect(const char* host, int port,
                                    const uint8_t* rsa_priv_key_der,
                                    size_t rsa_priv_key_der_len,
+                                   uint64_t wifi_network_handle,
                                    jlong* out_handle) {
     // Reject public destinations and hostnames before any network operation.
     struct sockaddr_in remote = {};
     if (!make_lan_sockaddr(host, port, &remote)) {
         return "LAN-only mode: public IPs and hostnames are blocked";
+    }
+    const bool loopback = (ntohl(remote.sin_addr.s_addr) >> 24) == 127;
+    if (wifi_network_handle == 0 && !loopback) {
+        return "Wi-Fi network binding is required for LAN connections";
     }
 
     // 1. Parse RSA private key
@@ -705,6 +721,11 @@ static std::string do_tls_connect(const char* host, int port,
     if (fd < 0) {
         EVP_PKEY_free(pkey); X509_free(cert);
         return "socket() failed";
+    }
+    if (wifi_network_handle != 0 &&
+        android_setsocknetwork(static_cast<net_handle_t>(wifi_network_handle), fd) != 0) {
+        close(fd); EVP_PKEY_free(pkey); X509_free(cert);
+        return "Failed to bind ADB TLS socket to Wi-Fi";
     }
 
     struct timeval tv;
@@ -745,6 +766,11 @@ static std::string do_tls_connect(const char* host, int port,
         if (fd < 0) {
             EVP_PKEY_free(pkey); X509_free(cert);
             return "socket() failed on TLS-first retry";
+        }
+        if (wifi_network_handle != 0 &&
+            android_setsocknetwork(static_cast<net_handle_t>(wifi_network_handle), fd) != 0) {
+            close(fd); EVP_PKEY_free(pkey); X509_free(cert);
+            return "Failed to bind TLS-first retry socket to Wi-Fi";
         }
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
@@ -829,7 +855,7 @@ static std::string do_tls_connect(const char* host, int port,
 extern "C" JNIEXPORT jlong JNICALL
 Java_tech_devline_scropy_1ui_adb_AdbTlsSocket_nativeConnect(
         JNIEnv* env, jobject /* thiz */,
-        jstring j_host, jint port, jbyteArray j_rsa_priv_key_der) {
+        jstring j_host, jint port, jbyteArray j_rsa_priv_key_der, jlong j_wifi_network_handle) {
 
     const char* host = env->GetStringUTFChars(j_host, nullptr);
     jsize key_len = env->GetArrayLength(j_rsa_priv_key_der);
@@ -838,7 +864,9 @@ Java_tech_devline_scropy_1ui_adb_AdbTlsSocket_nativeConnect(
     jlong handle = -1;
     std::string err = do_tls_connect(host, port,
                                       reinterpret_cast<const uint8_t*>(key_data),
-                                      (size_t)key_len, &handle);
+                                      (size_t)key_len,
+                                      static_cast<uint64_t>(j_wifi_network_handle),
+                                      &handle);
 
     env->ReleaseByteArrayElements(j_rsa_priv_key_der, key_data, JNI_ABORT);
     env->ReleaseStringUTFChars(j_host, host);
