@@ -11,4 +11,5 @@ add_library(adb_pairing SHARED adb_pairing_jni.cpp)
 target_include_directories(adb_pairing PRIVATE boringssl/include)
 
 find_library(log-lib log)
-target_link_libraries(adb_pairing crypto ssl ${log-lib})
+find_library(android-lib android)
+target_link_libraries(adb_pairing crypto ssl ${log-lib} ${android-lib})
